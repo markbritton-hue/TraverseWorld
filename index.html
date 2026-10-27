@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Traverse World</title>
+<style>
+  :root {
+    --bg: #070b16; --panel: #0e1526; --text: #e6ecf8; --muted: #8a97b5;
+    --land: #1d2b47; --land-edge: #2f4268; --ocean: #0a1a33;
+    --route: #ffb347; --glow: #ff8a00; --city: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .app { display: grid; grid-template-columns: 1fr 320px; height: 100%; }
+  .stage { position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  canvas { max-width: 100%; max-height: 100%; }
+  .now { position: absolute; left: 24px; bottom: 24px; }
+  .now small { color: var(--muted); letter-spacing: .12em; text-transform: uppercase; font-size: 11px; }
+  .now h1 { margin: 2px 0 0; font-size: 60px; font-weight: 700; line-height: 1.05; text-shadow: 0 2px 12px #000; }
+  .panelist { color: var(--route); font-size: 32px; font-weight: 600; min-height: 38px; text-shadow: 0 2px 12px #000; }
+  ol li em { font-style: normal; opacity: .85; }
+  ol li small { opacity: .6; }
+  .miles { margin-top: 6px; color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums; }
+  .miles b { color: var(--route); font-size: 22px; font-weight: 600; }
+  aside { background: var(--panel); padding: 20px; overflow-y: auto; border-left: 1px solid #1a2440; }
+  aside h2 { margin: 0 0 12px; font-size: 15px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+  button { background: #1a2748; color: var(--text); border: 1px solid #2a3a66; border-radius: 6px;
+    padding: 7px 12px; font: inherit; cursor: pointer; }
+  button:hover { background: #24356420; background: #243564; }
+  button.primary { background: var(--glow); border-color: var(--glow); color: #1a0f00; font-weight: 600; }
+  textarea { width: 100%; height: 150px; background: #080e1c; color: var(--text); border: 1px solid #2a3a66;
+    border-radius: 6px; padding: 8px; font: 13px/1.5 ui-monospace, Consolas, monospace; resize: vertical; }
+  label { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .msg { font-size: 12px; color: #ff8a8a; min-height: 16px; margin: 6px 0; }
+  ol { padding-left: 22px; margin: 8px 0 0; font-size: 14px; }
+  ol li { padding: 3px 0; color: var(--muted); }
+  ol li.done { color: var(--text); }
+  ol li.cur { color: var(--route); font-weight: 600; }
+  @media (max-width: 800px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: 60% 40%; }
+    aside { border-left: 0; border-top: 1px solid #1a2440; }
+    .now h1 { font-size: 34px; }
+    .panelist { font-size: 20px; min-height: 24px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="stage">
+    <canvas id="globe"></canvas>
+    <div class="now"><small id="legLabel">Ready</small><h1 id="cityLabel">—</h1>
+      <div id="panelLabel" class="panelist"></div>
+      <div class="miles"><b id="milesDone">0</b> mi traveled <span>of <span id="milesTotal">0</span> mi</span></div></div>
+  </div>
+  <aside>
+    <h2>Cities</h2>
+    <textarea id="cityInput" spellcheck="false"></textarea>
+    <div class="msg" id="msg"></div>
+    <div class="row">
+      <button class="primary" id="apply">Apply &amp; restart</button>
+      <button id="toggle">Pause</button>
+    </div>
+    <div class="row">
+      <label>Speed <input type="range" id="speed" min="0.3" max="3" step="0.1" value="1"></label>
+      <label><input type="checkbox" id="loop"> Loop</label>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin:0 0 4px">The first city is the start; the rest are reordered into the shortest route. One stop per line as <code>City | Panelist name</code>
+      (the panelist is optional). For a place the lookup can't find, use <code>Name, lat, lon | Panelist</code>.</p>
+    <ol id="list"></ol>
+  </aside>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script>
+// ---- Built-in city lookup: name -> [lat, lon] ----
+const KNOWN = {
+  "London":[51.51,-0.13],"Paris":[48.86,2.35],"Berlin":[52.52,13.40],"Madrid":[40.42,-3.70],"Rome":[41.90,12.50],
+  "Moscow":[55.76,37.62],"Istanbul":[41.01,28.98],"Cairo":[30.04,31.24],"Lagos":[6.52,3.38],"Nairobi":[-1.29,36.82],
+  "Cape Town":[-33.92,18.42],"Johannesburg":[-26.20,28.05],"Dubai":[25.20,55.27],"Mumbai":[19.08,72.88],
+  "Delhi":[28.61,77.21],"Bangkok":[13.76,100.50],"Singapore":[1.35,103.82],"Hong Kong":[22.32,114.17],
+  "Shanghai":[31.23,121.47],"Beijing":[39.90,116.41],"Seoul":[37.57,126.98],"Tokyo":[35.68,139.69],
+  "Manila":[14.60,120.98],"Jakarta":[-6.21,106.85],"Sydney":[-33.87,151.21],"Melbourne":[-37.81,144.96],
+  "Perth":[-31.95,115.86],"Auckland":[-36.85,174.76],"Honolulu":[21.31,-157.86],"Anchorage":[61.22,-149.90],
+  "Vancouver":[49.28,-123.12],"Seattle":[47.61,-122.33],"San Francisco":[37.77,-122.42],"Los Angeles":[34.05,-118.24],
+  "Las Vegas":[36.17,-115.14],"Denver":[39.74,-104.99],"Dallas":[32.78,-96.80],"Houston":[29.76,-95.37],
+  "Chicago":[41.88,-87.63],"Toronto":[43.65,-79.38],"New York":[40.71,-74.01],"Boston":[42.36,-71.06],
+  "Washington":[38.91,-77.04],"Miami":[25.76,-80.19],"Mexico City":[19.43,-99.13],"Havana":[23.11,-82.37],
+  "Bogota":[4.71,-74.07],"Lima":[-12.05,-77.04],"Santiago":[-33.45,-70.67],"Buenos Aires":[-34.60,-58.38],
+  "Sao Paulo":[-23.55,-46.63],"Rio de Janeiro":[-22.91,-43.17],"Reykjavik":[64.15,-21.94],"Oslo":[59.91,10.75],
+  "Stockholm":[59.33,18.07],"Amsterdam":[52.37,4.90],"Lisbon":[38.72,-9.14],"Athens":[37.98,23.73],
+  "Vienna":[48.21,16.37],"Prague":[50.08,14.44],"Warsaw":[52.23,21.01],"Dublin":[53.35,-6.26],
+  "Casablanca":[33.57,-7.59],"Addis Ababa":[9.03,38.75],"Tehran":[35.69,51.39],"Karachi":[24.86,67.01],
+  "Dhaka":[23.81,90.41],"Kathmandu":[27.72,85.32],"Hanoi":[21.03,105.85],"Kuala Lumpur":[3.14,101.69],
+  "Taipei":[25.03,121.57],"Ulaanbaatar":[47.89,106.91],"Vladivostok":[43.12,131.89],"Tahiti":[-17.54,-149.57],
+  "Michigan":[44.31,-85.60],"Texas":[31.00,-99.00],"Wisconsin":[44.50,-89.50],"Wisonsin":[44.50,-89.50],"Florida":[28.63,-82.45],"Norway":[60.47,8.47],"San Jose":[37.34,-121.89],"Zimbabwe":[-19.02,29.15],
+  "Fiji":[-18.14,178.44],"Edinburgh":[55.95,-3.19],"Manchester":[53.48,-2.24]
+};
+const SAMPLE = ["Michigan | Avery Brooks","Texas | Marcus Delgado","Wisconsin | Priya Nair","Florida | Tom Callahan",
+  "Norway | Ingrid Solberg","Zimbabwe | Tendai Moyo","San Jose | Lena Park"];
+const SAMPLE_WORLD = ["London","Cairo","Mumbai","Singapore","Tokyo","Sydney","Honolulu","Los Angeles","New York","Rio de Janeiro","Cape Town","London"];
+
+const EARTH_MI = 3958.8;   // mean Earth radius in miles; great-circle distance
+const fmt = n => Math.round(n).toLocaleString();
+const esc = s => s.replace(/[&<>"]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]));
+
+// ---- Setup ----
+const canvas = document.getElementById("globe");
+const ctx = canvas.getContext("2d");
+const $ = id => document.getElementById(id);
+let size = 600, dpr = window.devicePixelRatio || 1;
+const projection = d3.geoOrthographic().clipAngle(90).precision(0.3);
+const path = d3.geoPath(projection, ctx);
+const graticule = d3.geoGraticule10();
+const sphere = {type:"Sphere"};
+let land = null;
+let cities = [];                 // [{name, lon, lat}]
+let legs = [];                   // [{from,to,interp,dist,dur}]
+let legIdx = 0, legT = 0, pause = 0, playing = true, trail = [];
+let rot = [0, -20];
+let baseR = 280, zoom = 1;
+
+// Altitude of the arch (as a fraction of globe radius) at progress e of a leg
+const arcH = (L, e) => L.amp * Math.sin(Math.PI * e);
+// Project a lon/lat at altitude h; null when on the far side of the globe
+function lift(lon, lat, h) {
+  if (d3.geoDistance([lon, lat], [-rot[0], -rot[1]]) > Math.PI / 2) return null;
+  const p = projection([lon, lat]), c = size / 2, R = projection.scale();
+  return [c + (p[0] - c) * (1 + h), c + (p[1] - c) * (1 + h) - h * R * 0.7];
+}
+function strokeArc(pts) {
+  ctx.beginPath();
+  let pen = false;
+  pts.forEach(q => {
+    if (!q) { pen = false; return; }
+    pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]);
+    pen = true;
+  });
+  ctx.stroke();
+}
+
+function resize() {
+  const r = canvas.parentElement.getBoundingClientRect();
+  size = Math.max(200, Math.min(r.width, r.height) - 20);
+  canvas.width = size * dpr; canvas.height = size * dpr;
+  canvas.style.width = canvas.style.height = size + "px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  baseR = size/2 - 6;
+  projection.translate([size/2, size/2]).scale(baseR * zoom);
+}
+window.addEventListener("resize", resize);
+
+// ---- Parse city list ----
+function parseCities(text) {
+  const out = [], bad = [];
+  const lookup = {}; Object.keys(KNOWN).forEach(k => lookup[k.toLowerCase()] = KNOWN[k]);
+  text.split("\n").map(s => s.trim()).filter(Boolean).forEach(full => {
+    const [line, panelist = ""] = full.split("|").map(s => s.trim());   // "City | Panelist"
+    const p = line.split(",").map(s => s.trim());
+    if (p.length >= 3 && !isNaN(+p[p.length-2]) && !isNaN(+p[p.length-1])) {
+      out.push({name: p.slice(0, p.length-2).join(", "), lat: +p[p.length-2], lon: +p[p.length-1], panelist, raw: full});
+    } else {
+      const hit = lookup[line.toLowerCase()] || lookup[p[0].toLowerCase()];
+      out.push({name: line, lat: hit ? hit[0] : null, lon: hit ? hit[1] : null, panelist, raw: full});
+    }
+  });
+  return {out};
+}
+
+// Fallback for names not in KNOWN: OpenStreetMap Nominatim search (needs internet)
+const geoCache = {};
+async function geocode(name) {
+  if (name in geoCache) return geoCache[name];
+  try {
+    const r = await fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(name));
+    const j = await r.json();
+    geoCache[name] = j.length ? {lat: +j[0].lat, lon: +j[0].lon} : null;
+  } catch (e) { return null; }
+  return geoCache[name];
+}
+
+async function build(text) {
+  const {out} = parseCities(text);
+  const bad = [];
+  if (out.some(c => c.lat === null)) $("msg").textContent = "Looking up cities…";
+  for (const c of out) {
+    if (c.lat !== null) continue;
+    const r = await geocode(c.name);
+    if (r) { c.lat = r.lat; c.lon = r.lon; } else bad.push(c.name);
+  }
+  $("msg").textContent = bad.length ? "Couldn't find: " + bad.join("; ") + " (try Name, lat, lon)" : "";
+  optimizeOrder.saved = 0;
+  cities = optimizeOrder(out.filter(c => c.lat !== null));
+  if (optimizeOrder.saved > 1 && !bad.length)
+    $("msg").textContent = `Reordered to the shortest route (saves ${fmt(optimizeOrder.saved)} mi)`;
+  $("cityInput").value = cities.map(c => c.raw).join("\n");
+  legs = [];
+  for (let i = 0; i < cities.length - 1; i++) {
+    const a = [cities[i].lon, cities[i].lat], b = [cities[i+1].lon, cities[i+1].lat];
+    const dist = d3.geoDistance(a, b);
+    legs.push({from: i, to: i+1, interp: d3.geoInterpolate(a, b), dist, miles: dist * EARTH_MI, amp: Math.min(0.4, 0.06 + dist * 0.22),
+               dur: Math.max(1.6, Math.min(5, dist * 3.2))});
+  }
+  $("milesTotal").textContent = fmt(legs.reduce((s, L) => s + L.miles, 0));
+  $("list").innerHTML = cities.map((c,i) =>
+    `<li id="c${i}">${esc(c.name)}${c.panelist ? ` <em>· ${esc(c.panelist)}</em>` : ""}${i ?` <small>+${fmt(legs[i-1].miles)} mi</small>` : ""}</li>`).join("");
+  restart();
+}
+
+function restart() {
+  legIdx = 0; legT = 0; pause = 0.8; trail = [];
+  if (cities.length) { rot = [-cities[0].lon, -cities[0].lat]; }
+  label();
+}
+
+function label() {
+  const total = cities.length;
+  if (!total) { $("cityLabel").textContent = "—"; $("legLabel").textContent = "Add some cities"; return; }
+  const idx = Math.min(legIdx + (legT >= 1 ? 1 : 0), total - 1);
+  $("cityLabel").textContent = cities[idx].name;
+  $("panelLabel").textContent = cities[idx].panelist || "";
+  $("legLabel").textContent = legs.length ? `Stop ${idx+1} of ${total}` : "Single city";
+  cities.forEach((_, i) => { const el = $("c"+i); if (el) el.className = i < idx ? "done" : i === idx ? "cur" : ""; });
+}
+
+// ---- Rotation easing (handles longitude wrap) ----
+function easeRot(target, k) {
+  let dl = ((target[0] - rot[0] + 540) % 360) - 180;
+  rot = [rot[0] + dl * k, rot[1] + (target[1] - rot[1]) * k];
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000) * (+$("speed").value);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+function update(dt) {
+  if (!cities.length) return;
+  let head = [cities[Math.min(legIdx, cities.length-1)].lon, cities[Math.min(legIdx, cities.length-1)].lat];
+  if (playing && legs.length) {
+    if (pause > 0) { pause -= dt; }
+    else if (legIdx < legs.length) {
+      const L = legs[legIdx];
+      legT = Math.min(1, legT + dt / L.dur);
+      const e = d3.easeCubicInOut(legT);
+      head = L.interp(e);
+      if (trail.length === 0 || (legT - dt / L.dur) <= 0) trail.push([]);
+      trail.at(-1).push([head[0], head[1], arcH(L, e)]);
+      if (legT >= 1) {
+        label();
+        legIdx++; legT = 0; pause = 0.7;
+        if (legIdx >= legs.length) {
+          if ($("loop").checked) { setTimeout(restartLoop, 1200); legIdx = legs.length; pause = 99; }
+        } else label();
+      }
+    }
+  }
+  update.headH = 0; update.ahead = null;
+  let near = 1;                       // 1 = at a city, 0 = mid-flight
+  if (legIdx < legs.length && legT > 0) {
+    const L = legs[legIdx], e = d3.easeCubicInOut(legT);
+    head = L.interp(e);
+    update.headH = arcH(L, e);
+    const e2 = Math.min(1, e + 0.03), q = L.interp(e2);
+    update.ahead = [q[0], q[1], arcH(L, e2)];
+    near = Math.max(0, 1 - Math.min(legT, 1 - legT) / 0.3);
+    near = near * near * (3 - 2 * near);
+  } else if (legIdx >= legs.length) head = [cities.at(-1).lon, cities.at(-1).lat];
+  else head = [cities[legIdx].lon, cities[legIdx].lat];
+  zoom += (1 + 4 * near - zoom) * Math.min(1, dt * 3);
+  projection.scale(baseR * zoom);
+  easeRot([-head[0], -head[1]], 0.06);
+  projection.rotate([rot[0], rot[1], 0]);
+  update.head = head;
+  let done = 0;
+  for (let i = 0; i < Math.min(legIdx, legs.length); i++) done += legs[i].miles;
+  if (legIdx < legs.length) done += legs[legIdx].miles * d3.easeCubicInOut(legT);
+  $("milesDone").textContent = fmt(done);
+}
+function restartLoop() { trail = []; restart(); }
+
+function draw() {
+  ctx.clearRect(0, 0, size, size);
+  // ocean
+  const R = projection.scale(), mid = size / 2;
+  const g = ctx.createRadialGradient(mid - R*0.2, mid - R*0.3, R*0.1, mid, mid, R);
+  g.addColorStop(0, "#12294f"); g.addColorStop(1, "#050d1d");
+  ctx.beginPath(); path(sphere); ctx.fillStyle = g; ctx.fill();
+  // graticule
+  ctx.beginPath(); path(graticule); ctx.strokeStyle = "rgba(120,150,210,.12)"; ctx.lineWidth = .6; ctx.stroke();
+  // land
+  if (land) {
+    ctx.beginPath(); path(land); ctx.fillStyle = "#24365c"; ctx.fill();
+    ctx.strokeStyle = "#3a5185"; ctx.lineWidth = .5; ctx.stroke();
+  }
+  // full planned route, faint
+  if (cities.length > 1) {
+    ctx.setLineDash([2, 5]); ctx.strokeStyle = "rgba(255,179,71,.25)"; ctx.lineWidth = 1;
+    legs.forEach(L => {
+      strokeArc(d3.range(0, 1.0001, 0.02).map(t => { const q = L.interp(t); return lift(q[0], q[1], arcH(L, t)); }));
+    });
+    ctx.setLineDash([]);
+  }
+  // travelled trail: faint ground shadow, then the glowing arch
+  trail.forEach(seg => {
+    if (seg.length < 2) return;
+    ctx.beginPath(); path({type:"LineString", coordinates: seg.map(q => [q[0], q[1]])});
+    ctx.strokeStyle = "rgba(255,179,71,.3)"; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.save();
+    ctx.shadowColor = "#ff8a00"; ctx.shadowBlur = 12;
+    ctx.strokeStyle = "#ffb347"; ctx.lineWidth = 2.4; ctx.lineJoin = "round";
+    strokeArc(seg.map(q => lift(q[0], q[1], q[2])));
+    ctx.restore();
+  });
+  // city markers: drawn after the banana (below) so nothing covers a name. Labels dodge
+  // each other and other cities' dots by trying right / left / above / below.
+  const drawMarkers = () => {
+    const k = Math.max(1, R * 0.03 / 12), fs = 12 * k;   // label scale grows as we zoom in
+    const vis = [];
+    cities.forEach((c, i) => {
+      if (d3.geoDistance([c.lon, c.lat], [-rot[0], -rot[1]]) > Math.PI / 2) return;
+      const p = projection([c.lon, c.lat]);
+      vis.push({c, p, reached: i <= legIdx, d: Math.hypot(p[0] - mid, p[1] - mid)});
+    });
+    const dotR = 6 * Math.sqrt(k);
+    vis.forEach(v => {
+      ctx.beginPath(); ctx.arc(v.p[0], v.p[1], (v.reached ? 4 : 2.5) * Math.sqrt(k), 0, 6.283);
+      ctx.fillStyle = v.reached ? "#fff" : "rgba(255,255,255,.5)"; ctx.fill();
+    });
+    const hit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    const placed = [];
+    vis.slice().sort((a, b) => a.d - b.d).filter(v => v.reached).forEach((v, n) => {
+      const {c, p} = v, sub = c.panelist ? fs * 0.8 : 0;
+      ctx.font = `600 ${fs}px system-ui`; let w = ctx.measureText(c.name).width;
+      if (c.panelist) { ctx.font = `${sub}px system-ui`; w = Math.max(w, ctx.measureText(c.panelist).width); }
+      const h = fs * 1.1 + (c.panelist ? fs * 1.0 : 0), g = 10 * k;
+      // candidate top-left corners of the label box
+      const spots = [[p[0] + g, p[1] - fs * 0.9], [p[0] - g - w, p[1] - fs * 0.9],
+                     [p[0] - w / 2, p[1] - g - h], [p[0] - w / 2, p[1] + g]];
+      const obstacles = vis.filter(o => o !== v).map(o => ({x: o.p[0] - dotR, y: o.p[1] - dotR, w: 2 * dotR, h: 2 * dotR}));
+      let box = null;
+      for (const [x, y] of spots) {
+        const b = {x, y, w, h};
+        if (![...placed, ...obstacles].some(o => hit(b, o))) { box = b; break; }
+      }
+      if (!box && n === 0) box = {x: spots[0][0], y: spots[0][1], w, h};   // current city is always labelled
+      if (!box) return;
+      placed.push(box);
+      const bx = box.x, by = box.y + fs * 0.9;
+      ctx.lineJoin = "round"; ctx.lineWidth = Math.max(3, fs * 0.2); ctx.strokeStyle = "rgba(5,13,29,.85)";
+      ctx.font = `600 ${fs}px system-ui`;
+      ctx.strokeText(c.name, bx, by); ctx.fillStyle = "#fff"; ctx.fillText(c.name, bx, by);
+      if (c.panelist) {
+        ctx.font = `${sub}px system-ui`;
+        ctx.strokeText(c.panelist, bx, by + fs); ctx.fillStyle = "#ffb347"; ctx.fillText(c.panelist, bx, by + fs);
+      }
+    });
+  };
+  // moving head
+  const h = update.head && lift(update.head[0], update.head[1], update.headH || 0);
+  if (h && legIdx < legs.length && legT > 0) {
+    // whole, unpeeled banana drawn as a vector, tilted along the direction of flight
+    const ah = update.ahead && lift(update.ahead[0], update.ahead[1], update.ahead[2]);
+    const ang = ah ? Math.atan2(ah[1] - h[1], ah[0] - h[0]) : 0;
+    ctx.save();
+    ctx.translate(h[0], h[1]);
+    if (Math.cos(ang) < 0) { ctx.rotate(ang + Math.PI); ctx.scale(1, -1); } else ctx.rotate(ang);
+    const bs = Math.max(18, R * 0.045) / 2;
+    ctx.scale(bs, bs);
+    ctx.beginPath();
+    ctx.moveTo(-1, -0.15);
+    ctx.bezierCurveTo(-0.4, 0.75, 0.5, 0.75, 1, -0.25);
+    ctx.bezierCurveTo(0.5, 0.25, -0.4, 0.25, -1, -0.15);
+    ctx.closePath();
+    ctx.shadowColor = "#ff8a00"; ctx.shadowBlur = 14;
+    ctx.fillStyle = "#ffe135"; ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.lineJoin = "round"; ctx.lineWidth = 0.07; ctx.strokeStyle = "#b8920a"; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-0.85, -0.1);                      // ridge along the peel
+    ctx.bezierCurveTo(-0.3, 0.5, 0.4, 0.5, 0.9, -0.18);
+    ctx.lineWidth = 0.04; ctx.strokeStyle = "rgba(184,146,10,.6)"; ctx.stroke();
+    ctx.fillStyle = "#6b4a1e";
+    ctx.fillRect(-1.2, -0.3, 0.26, 0.2);                           // stem
+    ctx.beginPath(); ctx.arc(1, -0.25, 0.07, 0, 6.283); ctx.fill(); // dark tip
+    ctx.restore();
+  }
+  drawMarkers();
+  // atmosphere rim
+  ctx.beginPath(); path(sphere); ctx.strokeStyle = "rgba(120,170,255,.45)"; ctx.lineWidth = 1.5; ctx.stroke();
+}
+
+// ---- Wire up ----
+$("cityInput").value = SAMPLE.join("\n");
+$("apply").onclick = () => build($("cityInput").value);
+// Reorder stops (first city fixed as the start) to minimise total distance:
+// nearest-neighbour seed, then 2-opt segment reversals until nothing improves.
+function optimizeOrder(cities) {
+  const n = cities.length;
+  if (n < 3) return cities;
+  const D = cities.map(a => cities.map(b => d3.geoDistance([a.lon, a.lat], [b.lon, b.lat])));
+  const len = o => o.reduce((s, c, i) => i ? s + D[o[i-1]][c] : 0, 0);
+  const left = new Set(d3.range(1, n)), order = [0];
+  while (left.size) {
+    const cur = order.at(-1);
+    const next = [...left].reduce((b, c) => D[cur][c] < D[cur][b] ? c : b);
+    order.push(next); left.delete(next);
+  }
+  let improved = true;
+  while (improved) {
+    improved = false;
+    for (let i = 1; i < n - 1; i++) for (let j = i + 1; j < n; j++) {
+      const cand = order.slice(0, i).concat(order.slice(i, j + 1).reverse(), order.slice(j + 1));
+      if (len(cand) < len(order) - 1e-9) { order.splice(0, n, ...cand); improved = true; }
+    }
+  }
+  optimizeOrder.saved = (len(d3.range(n)) - len(order)) * EARTH_MI;
+  return order.map(i => cities[i]);
+}
+$("toggle").onclick = () => { playing = !playing; $("toggle").textContent = playing ? "Pause" : "Play"; };
+
+resize();
+fetch("https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-110m.json")
+  .then(r => r.json())
+  .then(w => { land = topojson.feature(w, w.objects.land); })
+  .catch(() => { $("msg").textContent = "Could not load map data (needs internet)."; });
+build($("cityInput").value);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
